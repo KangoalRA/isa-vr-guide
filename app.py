@@ -154,7 +154,8 @@ if m["price"] > 0:
     col3.metric("누적 수익률", f"{roi_pct:.2f}%", delta_color="normal")
     st.divider()
 
-    tab1, tab2 = st.tabs(["📊 매매 가이드", "📋 상세 정보"])
+    # 탭을 3개로 확장합니다.
+    tab1, tab2, tab3 = st.tabs(["📊 매매 가이드", "📋 상세 정보", "🛡️ 리스크 관리"])
     telegram_msg = ""
     with tab1:
         if m_type == "normal": st.success(msg)
