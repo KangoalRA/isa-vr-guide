@@ -7,7 +7,7 @@ import requests
 import time
 from streamlit_gsheets import GSheetsConnection
 
-# --- [0. 페이지 설정] ---
+# --- [0. 페이지 설정 및 제목] ---
 st.set_page_config(page_title="ISA VR 매매 사용 가이드", layout="wide")
 
 # 텔레그램 전송 함수
@@ -85,7 +85,7 @@ if m["price"] > 0:
             if not df_history.empty:
                 last_row = df_history.iloc[-1]
                 default_qty, default_pool, default_v, default_principal = int(last_row.iloc[0]), int(last_row.iloc[1]), int(last_row.iloc[2]), int(last_row.iloc[3])
-                st.success(f"📈 총 {len(df_history)}회차 기록 로드됨")
+                st.success(f"📈 {len(df_history)}회차 데이터 로드")
             else: raise Exception()
         except:
             default_qty, default_pool, default_v, default_principal = 0, 0, 0, 20566879
@@ -105,22 +105,18 @@ if m["price"] > 0:
             add_cash = st.number_input("추가 입금액 (원)", value=0, step=10000)
             if add_cash > 0: v1 += add_cash; principal += add_cash
 
-        # [수정된 저장 로직] E열 날짜와 F열 FnG 지수 함께 저장
         if st.button("💾 ISA 시트에 저장"):
             new_row = pd.DataFrame([{
-                "Qty": qty, 
-                "Pool": pool, 
-                "V_old": v_to_save, 
-                "Principal": principal, 
-                "Date": datetime.now().strftime('%Y-%m-%d'),
-                "FnG": fng_input  # F열에 저장될 데이터
+                "Qty": qty, "Pool": pool, "V_old": v_to_save, 
+                "Principal": principal, "Date": datetime.now().strftime('%Y-%m-%d'),
+                "FnG": fng_input
             }])
             updated_df = pd.concat([df_history, new_row], ignore_index=True) if not df_history.empty else new_row
             conn.update(worksheet="ISA", data=updated_df)
-            st.cache_data.clear() 
-            st.success(f"✅ 날짜(E열)와 FnG({fng_input})(F열) 기록 완료!")
+            st.cache_data.clear()
+            st.success(f"✅ {datetime.now().strftime('%Y-%m-%d')} 데이터(FnG 포함) 저장 완료!")
 
-    # --- 메인 화면 (나머지 동일) ---
+    # --- [4. 메인 화면] ---
     v_l, v_u = int(v1 * (1 - band_pct)), int(v1 * (1 + band_pct))
     curr_stock_val = m['price'] * qty
     current_asset = curr_stock_val + pool
@@ -133,14 +129,13 @@ if m["price"] > 0:
     c3.metric("누적 수익률", f"{roi_pct:.2f}%")
     st.divider()
 
-    tab1, tab2, tab3 = st.tabs(["📊 매매 가이드", "📋 사용방법(상세)", "🛡️ 안전장치 로직(상세)"])
+    tab1, tab2, tab3 = st.tabs(["📊 매매 가이드", "📋 사용방법", "🛡️ 안전장치 로직"])
     
     with tab1:
         if m_type == "normal": st.success(msg)
         elif m_type == "warning": st.warning(msg)
         else: st.error(msg)
         
-        # 포지션 그래프
         if v1 > 0:
             pos_fig = go.Figure()
             pos_fig.add_trace(go.Scatter(x=[0], y=[v_u], name="매도", mode="markers+text", text=[f"매도: {v_u:,}"], textposition="top center", marker=dict(color="blue", size=12)))
@@ -157,33 +152,49 @@ if m["price"] > 0:
                     st.info(f"매수 승인: 강도 {qta*100:.0f}%")
                     st.code(f"✅ LOC 추천가: {int(v_l/(qty+1)):,}원")
                 else: st.error("🚫 안전장치 미충족: 매수 절대 금지")
-            else: st.info("😴 관망 (평가액 > 하단 밴드)")
+            else: st.info("😴 매수 관망")
         with r:
             st.markdown("#### 📈 SELL (매도 가이드)")
             if curr_stock_val > v_u:
                 st.code(f"🔥 LOC 추천가: {int(v1/(qty-1)):,}원")
-            else: st.info("😴 관망 (평가액 < 상단 밴드)")
+            else: st.info("😴 매도 관망")
 
         st.divider()
         if not df_history.empty:
-            st.subheader("📈 자산 성장 히스토리")
+            st.subheader("📈 자산 성장 히스토리 (DB 기록)")
             hist_fig = go.Figure()
             hist_fig.add_trace(go.Scatter(x=df_history['Date'], y=df_history['V_old'], name="목표(V)", line=dict(color='gray', dash='dash')))
             hist_fig.add_trace(go.Scatter(x=df_history['Date'], y=df_history['Qty'] * m['price'], name="실제 평가액", line=dict(color='#00FF00', width=3)))
-            # [추가] 과거 FnG 지수도 그래프에 점으로 표시 (선택사항)
             if 'FnG' in df_history.columns:
-                hist_fig.add_trace(go.Scatter(x=df_history['Date'], y=df_history['FnG'], name="과거 심리지수(FnG)", yaxis="y2", mode="markers", marker=dict(color="orange", size=8)))
-            
-            hist_fig.update_layout(
-                xaxis_title="날짜", 
-                yaxis_title="금액(원)", 
-                yaxis2=dict(title="FnG", overlaying="y", side="right", range=[0, 100]),
-                height=400
-            )
+                hist_fig.add_trace(go.Scatter(x=df_history['Date'], y=df_history['FnG'], name="당시 FnG", yaxis="y2", mode="markers", marker=dict(color="orange", size=8)))
+            hist_fig.update_layout(xaxis_title="날짜", yaxis_title="원", yaxis2=dict(title="FnG", overlaying="y", side="right", range=[0, 100]), height=400)
             st.plotly_chart(hist_fig, use_container_width=True)
 
     with tab2:
-        st.write("...중략 (기존 사용방법 멘트 유지)...")
+        st.markdown("### 📘 ISA VR 5.1 실전 사용 매뉴얼")
+        st.success("#### 🟢 상승장 (매도 타임)\n- 주가 평가액이 파란색 **매도선(110%)**을 넘으면 수익 실현 타이밍입니다.\n- 가이드에 나온 가격으로 매도 주문을 넣고, 판 돈은 **Pool(현금)**에 보관하세요. 💰")
+        st.warning("#### 🟡 횡보장 (관망 타임)\n- 주가가 밴드 안에서 움직이면 아무것도 하지 않는 것이 핵심입니다.\n- 매회차 V값을 조금씩 늘려가며(0.6% 권장) 자산의 기초 체력을 키웁니다. ☕")
+        st.error("#### 🔴 하락장 (매수 타임)\n- 주가 평가액이 빨간색 **매수선(90%)** 아래로 떨어지면 줍줍 타이밍입니다.\n- 단, **안전장치(탭3)**가 허락할 때만 현금을 투입하여 생존을 우선합니다. 📉")
+        st.divider()
+        st.markdown("""
+        **📝 매매 운영 루틴**
+        1. **격주 월요일 오후 3시:** 앱을 켜고 현재 수량과 현금을 정확히 입력한다.
+        2. **저장:** '사이클 업데이트' 모드로 이번 회차 기록을 저장한다. (E열 날짜, F열 FnG 자동 기록)
+        3. **주문:** 가이드가 제시한 가격으로 **LOC 예약 주문**을 넣는다.
+        """)
 
     with tab3:
-        st.write("...중략 (기존 안전장치 로직 멘트 유지)...")
+        st.markdown("### 🛡️ ISA-VR 이중 안전장치 설정 원리")
+        st.info("시장의 폭락장에서 현금이 고갈되는 것을 방지하기 위해 **나스닥 낙폭(DD)**과 **공포지수(FnG)**를 동시 체크합니다. ⚙️")
+        c_a, c_b = st.columns(2)
+        with c_a:
+            st.subheader("1️⃣ 나스닥 낙폭 (DD) 기준")
+            st.write("- **정상장 (-10% 이내):** 매수 신호 시 가용 현금의 **100% 가동** 가능. 👍")
+            st.write("- **조정장 (-10% ~ -20%):** 하락 압력 대비 매수 강도를 **50%로 제한**. ✋")
+            st.write("- **폭락장 (-20% 초과):** 패닉 구간 대비 매수 강도를 **30%로 극도 제한**. 🚨")
+        with c_b:
+            st.subheader("2️⃣ 공포지수 (FnG) 승인 조건")
+            st.write("- **조정장 진입 시:** 시장 심리 FnG가 **20 이하**일 때만 매수 신호를 최종 승인.")
+            st.write("- **폭락장 진입 시:** 시장 심리 FnG가 **15 이하**로 떨어졌을 때만 보수적 매수 승인.")
+        st.divider()
+        st.warning("⚠️ **핵심 원칙:** 주가가 싸 보인다고 사는 것이 아니라, **시장이 극심한 공포에 빠졌을 때만** 시스템의 승인을 받아 기계적으로 현금을 투입합니다.")
