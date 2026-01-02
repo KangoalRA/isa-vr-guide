@@ -57,20 +57,25 @@ def get_market_intelligence():
 
 m = get_market_intelligence()
 
-# --- [2. 로직 함수] ---
+# --- [2. 로직 함수: 안전장치 멘트 수정] ---
 def check_safety(dd, fng):
-    if dd > -10: return True, 1.0, "🟩 정상장: 100% 가동", "normal"
+    if dd > -10: 
+        return True, 1.0, "🟩 정상장: 가용 현금 100% 매수 가능", "normal"
     elif -20 < dd <= -10:
-        if fng <= 20: return True, 0.5, "🟧 조정장: 50% (FnG 20↓)", "warning"
-        else: return False, 0.0, f"🚫 조정장 대기: FnG {fng} (20 필요)", "error"
+        if fng <= 20: 
+            return True, 0.5, "🟧 조정장: 가용 현금 50% 제한 매수 (FnG 20 이하 충족)", "warning"
+        else: 
+            return False, 0.0, f"🚫 조정장 매수 금지: 현재 FnG {fng} (20 이하 필요)", "error"
     else:
-        if fng <= 15: return True, 0.3, "🟥 하락장: 30% (FnG 15↓)", "critical"
-        else: return False, 0.0, f"🚫 하락장 방어: FnG {fng} (15 필요)", "error"
+        if fng <= 15: 
+            return True, 0.3, "🟥 하락장: 가용 현금 30% 초보수적 매수 (FnG 15 이하 충족)", "critical"
+        else: 
+            return False, 0.0, f"🚫 하락장 매수 금지: 현재 FnG {fng} (15 이하 필요)", "error"
 
 def get_recommended_band(dd, is_bull):
     if not is_bull or dd < -20: return 5, "🟥 하락장: 방어 위해 5% 추천"
-    elif -20 <= dd < -10: return 7, "🟧 조정장: 7% ~ 10% 추천"
-    elif dd >= -10 and is_bull: return 10, "🟩 상승장: 10% ~ 15% 추천"
+    elif -20 <= dd < -10: return 7, "🟧 조정장: 7%에서 10% 추천"
+    elif dd >= -10 and is_bull: return 10, "🟩 상승장: 10%에서 15% 추천"
     return 10, "⬜ 일반: 10% 추천"
 
 # --- [UI 시작] ---
@@ -102,7 +107,7 @@ if m["price"] > 0:
                 st.success(f"☁️ ISA 데이터 로드 완료")
             else: raise Exception("Empty")
         except:
-            default_qty, default_pool, default_v, default_principal = 0, 0, 0, 0
+            default_qty, default_pool, default_v, default_principal = 0, 0, 0, 20566879
             st.warning("⚠️ 신규 데이터 입력 필요")
 
         mode = st.radio("운용 모드", ["최초 시작", "사이클 업데이트"])
@@ -131,7 +136,8 @@ if m["price"] > 0:
     v_l, v_u = int(v1 * (1 - band_pct)), int(v1 * (1 + band_pct))
     ok, qta, msg, m_type = check_safety(m['dd'], fng_input)
     current_asset = (m['price'] * qty) + pool
-    roi_val, roi_pct = current_asset - principal, ((current_asset - principal) / principal * 100 if principal > 0 else 0)
+    roi_val = current_asset - principal
+    roi_pct = (roi_val / principal * 100) if principal > 0 else 0
 
     st.subheader(f"📈 QLD 현재가: {m['price']:,}원")
     col1, col2, col3 = st.columns(3)
@@ -140,7 +146,6 @@ if m["price"] > 0:
     col3.metric("누적 수익률", f"{roi_pct:.2f}%")
     st.divider()
 
-    # --- 탭 구성 ---
     tab1, tab2, tab3 = st.tabs(["📊 매매 가이드", "📋 상세 정보", "🛡️ 리스크 관리"])
     
     with tab1:
@@ -159,13 +164,13 @@ if m["price"] > 0:
             st.markdown("#### 📉 매수 가이드")
             if m['price'] * qty < v_l:
                 if ok:
-                    st.write(f"쿼터 {qta*100:.0f}% 적용")
+                    st.write(f"매수 강도: {qta*100:.0f}% 적용")
                     for i in range(1, 10): 
                         t_q = qty + i
                         p = int(v_l / t_q)
                         if p < m['price'] * 1.05: st.code(f"✅ LOC 매수: {p:,}원 ({t_q}주)")
-                else: st.error("🚫 매수 금지 (FnG 안전장치)")
-            else: st.info("😴 매수 관망")
+                else: st.error("🚫 매수 금지 (안전장치 작동)")
+            else: st.info("😴 매수 관망 (주가 하단 미달)")
         with r:
             st.markdown("#### 📈 매도 가이드")
             if m['price'] * qty > v_u:
@@ -174,7 +179,7 @@ if m["price"] > 0:
                     if t_q > 0:
                         p = int(v1 / t_q)
                         if p > m['price']: st.code(f"🔥 LOC 매도: {p:,}원 ({qty-t_q}주 판매)")
-            else: st.info("😴 매도 관망")
+            else: st.info("😴 매도 관망 (주가 상단 미달)")
         
         if st.button("✈️ 텔레그램 전송"):
             t_msg = f"[ISA QLD 리포트]\n📅 {datetime.now().strftime('%Y-%m-%d')}\n가격: {m['price']:,}원\n상태: {msg}\n수익률: {roi_pct:.2f}%"
@@ -185,8 +190,8 @@ if m["price"] > 0:
         st.markdown("""
         * **거래일:** 격주 월요일 오후 3시 (미국 금요일 종가 반영)
         * **종목:** KODEX 미국나스닥100레버리지 (409820.KS)
-        * **밴드폭:** 10~15% 권장 (2배수 변동성 최적화)
-        * **기울기:** 2주당 0.5~0.8% 목표 (연 10~15% 성장)
+        * **밴드폭:** 10% ~ 15% 권장 (2배수 변동성 최적화)
+        * **기울기:** 2주당 0.5% ~ 0.8% 목표 (연 10% ~ 15% 성장 지향)
         """)
 
     with tab3:
@@ -194,9 +199,9 @@ if m["price"] > 0:
         col_a, col_b = st.columns(2)
         with col_a:
             st.info("#### 1. 나스닥 낙폭 (DD)")
-            st.write("- **정상장 (-10%):** 100% 가동\n- **조정장 (-20%):** 50% 제한\n- **하락장 (-20%↓):** 30% 제한")
+            st.write("- **상승장 (-10% 이내):** 매수 가이드 100% 집행\n- **조정장 (-20% 이내):** 매수 가이드 50% 제한\n- **하락장 (-20% 초과):** 매수 가이드 30% 제한")
         with col_b:
             st.warning("#### 2. 공포지수 (FnG)")
-            st.write("- **조정장 통과:** 20 이하 필요\n- **하락장 통과:** 15 이하 필요\n- 기준 미달 시 매수 신호가 떠도 강제 차단")
+            st.write("- **조정장 진입:** FnG 20 이하 시에만 매수 허용\n- **하락장 진입:** FnG 15 이하 시에만 매수 허용\n- 기준 미달 시 매수 신호가 떠도 시스템이 강제 차단")
 else:
     st.error("데이터 로드 중...")
