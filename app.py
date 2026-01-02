@@ -111,10 +111,27 @@ if m["price"] > 0:
                 principal += add_cash
 
         if st.button("💾 ISA 시트에 저장"):
-            new_row = pd.DataFrame([{"Qty": qty, "Pool": pool, "V_old": v_to_save, "Principal": principal, "Date": datetime.now().strftime('%Y-%m-%d')}])
-            updated_df = pd.concat([existing_data, new_row], ignore_index=True) if 'existing_data' in locals() else new_row
+            # 1. 저장할 데이터 생성 (날짜 포함)
+            new_row = pd.DataFrame([{
+                "Qty": qty, 
+                "Pool": pool, 
+                "V_old": v_to_save, 
+                "Principal": principal, 
+                "Date": datetime.now().strftime('%Y-%m-%d')
+            }])
+            
+            # 2. 기존 데이터와 합치기 (데이터가 없을 경우 대비)
+            if 'existing_data' in locals() and not existing_data.empty:
+                updated_df = pd.concat([existing_data, new_row], ignore_index=True)
+            else:
+                updated_df = new_row
+            
+            # 3. 시트 업데이트
             conn.update(worksheet="ISA", data=updated_df)
-            st.success("✅ 저장 완료!")
+            
+            # 4. 캐시 삭제 및 성공 메시지 (날짜 표시로 확인 사살)
+            st.cache_data.clear()
+            st.success(f"✅ {datetime.now().strftime('%Y-%m-%d')} 기록이 E열에 저장되었습니다!")
 
     # --- 계산 ---
     v_l, v_u = int(v1 * (1 - band_pct)), int(v1 * (1 + band_pct))
