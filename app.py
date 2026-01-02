@@ -4,6 +4,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 from datetime import datetime
 import requests
+import time
 from streamlit_gsheets import GSheetsConnection
 
 # --- [0. 페이지 설정 및 제목] ---
@@ -57,7 +58,7 @@ def check_safety(dd, fng):
     else:
         return (True, 0.3, f"🚨 폭락장: 30% 제한 (FnG {fng})", "critical") if fng <= 15 else (False, 0.0, f"🚫 하락장 방어 (FnG {fng})", "error")
 
-# --- [3. UI 시작] ---
+# --- [3. UI 시작 및 사이드바] ---
 st.title("⚖️ ISA VR 매매 사용 가이드")
 
 with st.sidebar:
@@ -100,7 +101,7 @@ with st.sidebar:
         v_to_save = v1
     else:
         v_old = st.number_input("직전 V1 (원)", value=int(default_v), step=10000)
-        target_roi = st.slider("목표 수익률 (%)", 0.0, 1.5, 0.6, step=0.1) / 100
+        target_roi = st.slider("이번 텀 목표 수익률 (%)", 0.0, 1.5, 0.6, step=0.1) / 100
         v_to_save = int(v_old * (1 + target_roi))
         v1 = v_to_save
         add_cash = st.number_input("추가 입금액 (원)", value=0, step=10000)
@@ -117,11 +118,12 @@ with st.sidebar:
         st.cache_data.clear() 
         st.success("✅ 저장 완료!")
 
-# --- [4. 메인 화면] ---
+# --- [4. 메인 화면 출력] ---
 tab1, tab2, tab3 = st.tabs(["📊 매매 가이드", "📋 사용방법", "🛡️ 안전장치 로직"])
 
 with tab1:
-    if v1 > 0 and m["price"] > 0:
+    # v1 조건문을 탭 내부로 이동하여 탭 자체가 안 보이는 문제 해결
+    if v1 > 0:
         v_l, v_u = int(v1 * (1 - band_pct)), int(v1 * (1 + band_pct))
         curr_stock_val = m['price'] * qty
         current_asset = curr_stock_val + pool
@@ -161,7 +163,7 @@ with tab1:
                 st.code(f"🔥 LOC 추천가: {int(v1/(qty-1)):,}원")
             else: st.info("😴 매도 관망")
 
-        # [통합 그래프] 자산 히스토리 + FnG
+        # 통합 히스토리 그래프
         if not df_history.empty:
             st.divider()
             st.subheader("📈 통합 성장 히스토리 (자산 & 심리)")
