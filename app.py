@@ -4,7 +4,6 @@ import yfinance as yf
 import plotly.graph_objects as go
 from datetime import datetime
 import requests
-import time
 from streamlit_gsheets import GSheetsConnection
 
 # --- [0. 페이지 설정 및 제목] ---
@@ -122,7 +121,6 @@ with st.sidebar:
 tab1, tab2, tab3 = st.tabs(["📊 매매 가이드", "📋 사용방법", "🛡️ 안전장치 로직"])
 
 with tab1:
-    # v1 조건문을 탭 내부로 이동하여 탭 자체가 안 보이는 문제 해결
     if v1 > 0:
         v_l, v_u = int(v1 * (1 - band_pct)), int(v1 * (1 + band_pct))
         curr_stock_val = m['price'] * qty
@@ -149,23 +147,32 @@ with tab1:
         st.plotly_chart(pos_fig, use_container_width=True)
 
         l, r = st.columns(2)
+        telegram_msg = f"[ISA VR 리포트]\n📅 {datetime.now().strftime('%Y-%m-%d')}\n상태: {msg}\n수익률: {roi_pct:.2f}%\n"
         with l:
             st.markdown("#### 📉 BUY (매수)")
             if curr_stock_val < v_l:
                 if ok:
                     st.info(f"매수 승인: 강도 {qta*100:.0f}%")
-                    st.code(f"✅ LOC 추천가: {int(v_l/(qty+1)):,}원")
+                    txt = f"✅ LOC 추천가: {int(v_l/(qty+1)):,}원"
+                    st.code(txt)
+                    telegram_msg += f"{txt}\n"
                 else: st.error("🚫 안전장치 차단: 매수 금지")
             else: st.info("😴 매수 관망")
         with r:
             st.markdown("#### 📈 SELL (매도)")
             if curr_stock_val > v_u:
-                st.code(f"🔥 LOC 추천가: {int(v1/(qty-1)):,}원")
+                txt = f"🔥 LOC 추천가: {int(v1/(qty-1)):,}원"
+                st.code(txt)
+                telegram_msg += f"{txt}\n"
             else: st.info("😴 매도 관망")
+
+        # [복구된 텔레그램 버튼]
+        st.divider()
+        if st.button("✈️ 텔레그램 전송"):
+            send_telegram_msg(telegram_msg)
 
         # 통합 히스토리 그래프
         if not df_history.empty:
-            st.divider()
             st.subheader("📈 통합 성장 히스토리 (자산 & 심리)")
             combined_fig = go.Figure()
             combined_fig.add_trace(go.Scatter(x=df_history['Date'], y=df_history['V_old'], name="목표(V)", line=dict(color='gray', dash='dash')))
