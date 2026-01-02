@@ -83,18 +83,19 @@ if m["price"] > 0:
             else: raise Exception()
         except:
             default_qty, default_pool, default_v, default_principal = 0, 0, 0, 20566879
-            st.warning("⚠️ 신규 시작")
+            st.warning("⚠️ 데이터 없음: 최초 시작 필요")
 
         mode = st.radio("모드", ["최초 시작", "사이클 업데이트"])
-        principal = st.number_input("원금", value=int(default_principal))
-        qty = st.number_input("보유수량", value=int(default_qty), min_value=0)
-        pool = st.number_input("Pool", value=int(default_pool))
+        principal = st.number_input("총 투입 원금", value=int(default_principal))
+        qty = st.number_input("보유 수량", value=int(default_qty), min_value=0)
+        pool = st.number_input("Pool (현금/파킹)", value=int(default_pool))
         
         if mode == "최초 시작":
             v1 = m['price'] * qty
         else:
             v_old = st.number_input("직전 V1", value=int(default_v))
-            v1 = int(v_old * 1.006) # 기본 0.6% 증액 가입
+            # ISA는 2주 주기이므로 약 0.6% 증액 (기울기)
+            v1 = int(v_old * 1.006) 
             
         if st.button("💾 시트 저장"):
             new_data = pd.DataFrame([{"Qty": qty, "Pool": pool, "V_old": v1, "Principal": principal}])
@@ -106,34 +107,78 @@ if m["price"] > 0:
     curr_v = m['price'] * qty
     ok, qta, msg, m_type = check_safety(m['dd'], fng_input)
 
-    # --- 📊 [핵심] VR 시각화 그래프 ---
-    fig = go.Figure()
-    # 밴드 영역 표시
-    fig.add_trace(go.Scatter(x=["현재 상태"], y=[v_u], name="매도선(Upper)", mode="markers+text", text=[f"매도: {v_u:,}"], textposition="top center", marker=dict(color="blue", size=15)))
-    fig.add_trace(go.Scatter(x=["현재 상태"], y=[v1], name="목표V", mode="markers+text", text=[f"목표: {v1:,}"], textposition="middle right", marker=dict(color="gray", size=10, symbol="x")))
-    fig.add_trace(go.Scatter(x=["현재 상태"], y=[v_l], name="매수선(Lower)", mode="markers+text", text=[f"매수: {v_l:,}"], textposition="bottom center", marker=dict(color="red", size=15)))
-    # 현재가 표시
-    fig.add_trace(go.Scatter(x=["현재 상태"], y=[curr_v], name="현재 평가금", mode="markers+text", text=[f"현재: {curr_v:,}"], textposition="middle left", marker=dict(color="green", size=20, symbol="diamond")))
-    
-    fig.update_layout(title="VR 포지션 현황", ylabel="원화(₩)", height=500, showlegend=False)
-    st.plotly_chart(fig, use_container_width=True)
+    # --- 📊 VR 시각화 그래프 ---
+    if v1 > 0:
+        fig = go.Figure()
+        # 밴드 라인 (수평선)
+        fig.add_shape(type="line", x0=-0.5, x1=0.5, y0=v_u, y1=v_u, line=dict(color="RoyalBlue", width=2, dash="dash"))
+        fig.add_shape(type="line", x0=-0.5, x1=0.5, y0=v_l, y1=v_l, line=dict(color="Crimson", width=2, dash="dash"))
+        
+        # 포인트 표시
+        fig.add_trace(go.Scatter(x=[0], y=[v_u], name="매도선", mode="markers+text", text=[f"매도선: {v_u:,}"], textposition="top center", marker=dict(color="blue", size=12)))
+        fig.add_trace(go.Scatter(x=[0], y=[v_l], name="매수선", mode="markers+text", text=[f"매수선: {v_l:,}"], textposition="bottom center", marker=dict(color="red", size=12)))
+        fig.add_trace(go.Scatter(x=[0], y=[curr_v], name="현재 평가금", mode="markers+text", text=[f"현재: {curr_v:,}"], textposition="middle right", marker=dict(color="green", size=18, symbol="diamond")))
+        
+        # 레이아웃 수정 (ValueError 해결 포인트)
+        fig.update_layout(
+            title=f"VR 포지션 현황 (목표V: {v1:,}원)",
+            yaxis_title="평가금 (원)",
+            xaxis=dict(showticklabels=False, range=[-1, 1]),
+            height=450,
+            showlegend=False
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("💡 최초 시작 버튼을 눌러 데이터를 저장하면 그래프가 표시됩니다.")
 
-    # --- 하단 대시보드 ---
-    col1, col2, col3 = st.columns(3)
+    # --- 하단 대시보드 및 탭 ---
     current_asset = curr_v + pool
+    col1, col2, col3 = st.columns(3)
     col1.metric("총 자산", f"{current_asset:,.0f}원")
     col2.metric("목표 V 대비", f"{(curr_v/v1-1)*100:.2f}%" if v1>0 else "0%")
     col3.metric("수익률", f"{(current_asset/principal-1)*100:.2f}%" if principal>0 else "0%")
 
+    st.divider()
     tab1, tab2, tab3 = st.tabs(["📊 매매 가이드", "📋 상세 정보", "🛡️ 리스크 관리"])
-    # (이하 탭 내용은 이전과 동일...)
+    
     with tab1:
         if m_type == "normal": st.success(msg)
         else: st.error(msg)
         l, r = st.columns(2)
         with l:
-            if curr_v < v_l and ok: st.code(f"✅ 매수추천: {int(v_l/ (qty+1)):,}원")
-            else: st.info("매수 관망")
+            st.markdown("#### 📉 매수")
+            if curr_v < v_l and ok: 
+                # 다음 매수 가격 계산 (1주 추가 시 v_l에 도달하는 가격)
+                target_p = int(v_l / (qty + 1))
+                st.code(f"✅ LOC 매수 추천: {target_p:,}원")
+            else: st.info("매수 조건 미달")
         with r:
-            if curr_v > v_u: st.code(f"🔥 매도추천: {int(v1/ (qty-1)):,}원")
-            else: st.info("매도 관망")
+            st.markdown("#### 📈 매도")
+            if curr_v > v_u and qty > 0:
+                # 다음 매도 가격 계산 (1주 감소 시 v1에 도달하는 가격)
+                target_p = int(v1 / (qty - 1))
+                st.code(f"🔥 LOC 매도 추천: {target_p:,}원")
+            else: st.info("매도 조건 미달")
+            
+        if st.button("✈️ 텔레그램 리포트 전송"):
+            t_msg = f"[ISA QLD 리포트]\n📅 {datetime.now().strftime('%Y-%m-%d')}\n가격: {m['price']:,}원\n상태: {msg}\n수익률: {(current_asset/principal-1)*100:.2f}%"
+            send_telegram_msg(t_msg)
+
+    with tab2:
+        st.markdown("### 📘 ISA-VR 실전 운용 매뉴얼")
+        st.markdown("""
+        * **거래일:** 격주 월요일 오후 3시 (미국 금요일 종가 반영)
+        * **종목:** KODEX 미국나스닥100레버리지 (409820.KS)
+        * **밴드폭:** 10% ~ 15% 권장
+        * **기울기:** 2주당 0.5% ~ 0.8% 목표 (코드엔 기본 0.6% 설정됨)
+        """)
+
+    with tab3:
+        st.markdown("### 🛡️ ISA-VR 이중 안전장치")
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.info("#### 1. 나스닥 낙폭 (DD)")
+            st.write("- 정상장 (-10%): 가용현금 100%\n- 조정장 (-20%): 가용현금 50%\n- 하락장 (-20%↓): 가용현금 30%")
+        with col_b:
+            st.warning("#### 2. 공포지수 (FnG)")
+            st.write("- 조정장: 20 이하 시 매수\n- 하락장: 15 이하 시 매수\n- 미달 시 시스템 강제 차단")
