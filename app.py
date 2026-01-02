@@ -1,14 +1,13 @@
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-import plotly.graph_objects as go
 from datetime import datetime
 import requests
 import time
 from streamlit_gsheets import GSheetsConnection
 
 # --- [0. 페이지 설정] ---
-st.set_page_config(page_title="ISA QLD VR MANAGER", layout="wide")
+st.set_page_config(page_title="ISA QLD 매매 가이드", layout="wide")
 
 # 텔레그램 전송 함수
 def send_telegram_msg(msg):
@@ -19,168 +18,191 @@ def send_telegram_msg(msg):
         data = {"chat_id": chat_id, "text": msg}
         requests.post(url, data=data)
         st.toast("✅ 텔레그램 전송 완료!", icon="✈️")
-    except:
-        st.error("텔레그램 전송 실패")
+    except Exception as e:
+        st.error(f"텔레그램 전송 실패: {e}")
 
-# --- [1. 데이터 수집] ---
+# --- [🛡️ 안전한 데이터 수집 함수 (재시도 로직)] ---
+def get_data_safe(ticker, period="5d"):
+    for i in range(3):
+        try:
+            df = yf.Ticker(ticker).history(period=period)
+            if not df.empty:
+                return df
+            time.sleep(1) 
+        except:
+            time.sleep(1)
+    return pd.DataFrame() 
+
+# --- [1. 시장 데이터 수집] ---
 @st.cache_data(ttl=600)
 def get_market_intelligence():
-    data = {"price": 0, "dd": 0.0, "fng": 25.0}
+    data = {"price": 0, "dd": 0.0, "fng": 25.0, "bull": True}
     try:
-        t_hist = yf.Ticker("409820.KS").history(period="5d")
-        if not t_hist.empty: data["price"] = int(t_hist['Close'].iloc[-1])
-        n_hist = yf.Ticker("^NDX").history(period="2y")
+        # 1. KODEX QLD (409820.KS)
+        t_hist = get_data_safe("409820.KS", period="5d")
+        if not t_hist.empty:
+            data["price"] = int(t_hist['Close'].iloc[-1])
+        
+        # 2. 나스닥 지수
+        n_hist = get_data_safe("^NDX", period="2y")
         if not n_hist.empty:
             ndx_high = n_hist['Close'].max()
-            data["dd"] = round((n_hist['Close'].iloc[-1] / ndx_high - 1) * 100, 2)
-        r = requests.get("https://production.dataviz.cnn.io/index/fearandgreed/static/history", headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
-        if r.status_code == 200: data["fng"] = float(r.json()['fear_and_greed']['score'])
+            curr_ndx = n_hist['Close'].iloc[-1]
+            data["dd"] = round((curr_ndx / ndx_high - 1) * 100, 2)
+            data["bull"] = curr_ndx > n_hist['Close'].rolling(window=200).mean().iloc[-1]
+        
+        # 3. 공포지수
+        try:
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            r = requests.get("https://production.dataviz.cnn.io/index/fearandgreed/static/history", headers=headers, timeout=3)
+            if r.status_code == 200: data["fng"] = float(r.json()['fear_and_greed']['score'])
+        except: pass
+        
         return data
-    except: return data
+
+    except Exception as e:
+        return data
 
 m = get_market_intelligence()
 
-# --- [2. 로직 함수: 안전장치 멘트 강화] ---
+# --- [2. 로직 함수] ---
 def check_safety(dd, fng):
-    if dd > -10: 
-        return True, 1.0, f"🟩 정상장 (DD {dd}%): 안전장치 미작동. 가용 현금 100% 매수 가능.", "normal"
+    if dd > -10: return True, 1.0, "🟩 정상장: 100% 가동", "normal"
     elif -20 < dd <= -10:
-        if fng <= 20:
-            return True, 0.5, f"🟧 조정장 (DD {dd}%): 과매도 구간(FnG {fng}). 가용 현금의 50%만 매수 허용.", "warning"
-        else:
-            return False, 0.0, f"🚫 조정장 대기 (DD {dd}%): FnG({fng}) 수치 미달. 추가 하락 위험으로 매수 금지.", "error"
+        if fng <= 20: return True, 0.5, "🟧 조정장: 50% (FnG 20↓)", "warning"
+        else: return False, 0.0, f"🚫 조정장 대기: FnG {fng} (20 필요)", "error"
     else:
-        if fng <= 15:
-            return True, 0.3, f"🚨 폭락장 (DD {dd}%): 극심한 공포(FnG {fng}). 가용 현금의 30% 이내에서 보수적 매수.", "critical"
-        else:
-            return False, 0.0, f"⛔ 폭락장 방어 (DD {dd}%): 패닉 셀 구간 아님. 바닥 확인 전까지 매수 절대 금지.", "error"
+        if fng <= 15: return True, 0.3, "🟥 하락장: 30% (FnG 15↓)", "critical"
+        else: return False, 0.0, f"🚫 하락장 방어: FnG {fng} (15 필요)", "error"
 
-# --- [3. UI & 데이터 관리] ---
-st.title("⚖️ ISA QLD VR STRATEGY MANAGER")
+def get_recommended_band(dd, is_bull):
+    if not is_bull or dd < -20: return 5, "🟥 하락장: 방어 위해 5% 추천"
+    elif -20 <= dd < -10: return 7, "🟧 조정장: 7% ~ 10% 추천"
+    elif dd >= -10 and is_bull: return 10, "🟩 상승장: 10% ~ 15% 추천"
+    return 10, "⬜ 일반: 10% 추천"
 
-with st.sidebar:
-    st.header("⚙️ 실시간 지표 수정")
-    # [복구] FnG 수동 입력 칸
-    st.markdown(f"**현재 자동 수집 FnG: {m['fng']}**")
-    fng_input = st.number_input("FnG 직접 입력 (수정 필요 시)", value=float(m['fng']), min_value=0.0, max_value=100.0)
-    
-    st.divider()
-    st.header("📂 데이터 동기화")
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    try:
-        df_history = conn.read(worksheet="ISA", ttl=0).dropna(how='all')
-        if not df_history.empty:
-            last_row = df_history.iloc[-1]
-            default_qty, default_pool, default_v, default_principal = int(last_row.iloc[0]), int(last_row.iloc[1]), int(last_row.iloc[2]), int(last_row.iloc[3])
-            st.success(f"📈 총 {len(df_history)}회차 기록 로드됨")
-        else: raise Exception()
-    except:
-        default_qty, default_pool, default_v, default_principal = 0, 0, 0, 20566879
-        df_history = pd.DataFrame(columns=["Qty", "Pool", "V_old", "Principal", "Date"])
+# --- [UI 시작] ---
+st.title("🇰🇷 ISA 매매 가이드 (KODEX QLD)")
 
-    mode = st.radio("작업 선택", ["최초 설정", "사이클 업데이트"])
-    principal = st.number_input("누적 투입 원금", value=int(default_principal))
-    qty = st.number_input("현재 QLD 보유 수량", value=int(default_qty), min_value=0)
-    pool = st.number_input("현재 가용 현금(Pool)", value=int(default_pool))
-    
-    if mode == "최초 설정":
-        v1 = m['price'] * qty
-    else:
-        v_old = st.number_input("직전 회차 목표V", value=int(default_v))
-        v1 = int(v_old * 1.006) 
+if m["price"] > 0:
+    with st.sidebar:
+        st.header("⚙️ 시장 지표")
+        st.metric("나스닥 낙폭", f"{m['dd']}%")
+        st.markdown("[👉 FnG 지수 (CNN)](https://edition.cnn.com/markets/fear-and-greed)")
+        fng_input = st.number_input("FnG Index", value=float(m['fng']))
+        st.divider()
+        st.subheader("🛠️ 밴드폭 추천")
+        rec_val, rec_msg = get_recommended_band(m['dd'], m['bull'])
+        st.info(rec_msg)
+        band_pct = st.slider("밴드 설정 (%)", 5, 20, rec_val) / 100
+        st.divider()
+        st.subheader("💾 자산 데이터 (ISA)")
+        conn = st.connection("gsheets", type=GSheetsConnection)
         
-    if st.button("📝 현재 회차 데이터 시트 저장"):
-        new_row = pd.DataFrame([{"Qty": qty, "Pool": pool, "V_old": v1, "Principal": principal, "Date": datetime.now().strftime('%Y-%m-%d')}])
-        updated_df = pd.concat([df_history, new_row], ignore_index=True)
-        conn.update(worksheet="ISA", data=updated_df)
-        st.cache_data.clear() 
-        st.success(f"📊 {datetime.now().strftime('%Y-%m-%d')} 기록 완료")
+        try:
+            # ISA 시트 읽기 시도
+            existing_data = conn.read(worksheet="ISA", usecols=[0, 1, 2, 3], ttl=0).dropna()
+            if not existing_data.empty:
+                last_row = existing_data.iloc[-1]
+                default_qty = int(last_row.iloc[0])
+                default_pool = int(last_row.iloc[1])
+                default_v = int(last_row.iloc[2])
+                default_principal = int(last_row.iloc[3]) if len(last_row) > 3 else 20566879
+                st.success(f"☁️ ISA 데이터 로드 완료")
+            else: raise Exception("Empty")
+        except:
+            default_qty, default_pool, default_v, default_principal = 0, 0, 0, 0
+            st.warning("⚠️ 신규 시작 또는 데이터 없음 (초기값 0)")
 
-# --- [4. 결과 계산] ---
-curr_stock_val = m['price'] * qty
-v_l, v_u = int(v1 * 0.9), int(v1 * 1.1)
-current_total = curr_stock_val + pool
-# 입력받은 fng_input을 사용하여 안전장치 체크
-ok, qta, msg, m_type = check_safety(m['dd'], fng_input)
-
-# 상단 대시보드
-c1, c2, c3 = st.columns(3)
-c1.metric("총 자산(평가액+현금)", f"{current_total:,.0f}원")
-c2.metric("목표 V 대비 편차", f"{(curr_stock_val/v1-1)*100:.2f}%" if v1>0 else "0%")
-c3.metric("누적 수익률", f"{(current_total/principal-1)*100:.2f}%" if principal>0 else "0%")
-
-st.divider()
-
-# --- [5. 탭 구성] ---
-tab1, tab2, tab3 = st.tabs(["📊 매매 가이드", "📖 상세 운영법", "🛡️ 안전장치 로직"])
-
-with tab1:
-    st.subheader("🚩 현재 시장 상태 및 매수 승인")
-    if m_type == "normal": st.success(msg)
-    elif m_type == "warning": st.warning(msg)
-    else: st.error(msg)
-    
-    col_l, col_r = st.columns(2)
-    with col_l:
-        st.markdown("### 📉 BUY (매수)")
-        if curr_stock_val < v_l:
-            if ok:
-                st.info(f"매수 필요 금액: {v_l - curr_stock_val:,.0f}원")
-                st.code(f"권장 매수단가: {int(v_l/(qty+1)):,}원 이하", language="txt")
-            else:
-                st.error("⚠️ 주가는 하단 아래이나, 안전장치 미충족으로 매수 제한.")
+        mode = st.radio("운용 모드", ["최초 시작", "사이클 업데이트"])
+        principal = st.number_input("총 투입 원금 (원)", value=int(default_principal), step=10000)
+        
+        # [수정된 부분] min_value를 1에서 0으로 변경!
+        qty = st.number_input("보유 수량 (주)", value=int(default_qty), min_value=0)
+        
+        pool = st.number_input("Pool (파킹ETF 평가금)", value=int(default_pool), step=10000)
+        
+        if mode == "최초 시작":
+            v1 = m['price'] * qty
+            v_to_save = v1
         else:
-            st.write("현재 매수 구간이 아닙니다. (평가액 > 하단 밴드)")
+            v_old = st.number_input("직전 V1 (원)", value=int(default_v), step=10000)
+            target_roi = st.slider("이번 텀 목표 수익률 (%)", 0.0, 1.5, 0.5, step=0.1) / 100
+            v_to_save = int(v_old * (1 + target_roi))
+            v1 = v_to_save
+            add_cash = st.number_input("추가 입금액 (원)", value=0, step=10000)
+            if add_cash > 0:
+                v1 += add_cash
+                principal += add_cash
 
-    with col_r:
-        st.markdown("### 📈 SELL (매도)")
-        if curr_stock_val > v_u:
-            st.info(f"매도 필요 금액: {curr_stock_val - v_u:,.0f}원")
-            st.code(f"권장 매도단가: {int(v1/(qty-1)):,}원 이상", language="txt")
-        else:
-            st.write("현재 매도 구간이 아닙니다. (평가액 < 상단 밴드)")
+        if st.button("💾 ISA 시트에 저장"):
+            new_data = pd.DataFrame([{"Qty": qty, "Pool": pool, "V_old": v_to_save, "Principal": principal}])
+            conn.update(worksheet="ISA", data=new_data)
+            st.success("✅ 저장 완료!")
 
+    v_l = int(v1 * (1 - band_pct))
+    v_u = int(v1 * (1 + band_pct))
+    ok, qta, msg, m_type = check_safety(m['dd'], fng_input)
+    current_asset = (m['price'] * qty) + pool
+    roi_val = current_asset - principal
+    roi_pct = (roi_val / principal) * 100 if principal > 0 else 0
+
+    st.subheader(f"📈 QLD 현재가: {m['price']:,}원")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("총 투입 원금", f"{principal:,.0f}원")
+    col2.metric("ISA 총 자산", f"{current_asset:,.0f}원", delta=f"{roi_val:,.0f}원")
+    col3.metric("누적 수익률", f"{roi_pct:.2f}%", delta_color="normal")
     st.divider()
-    if not df_history.empty:
-        st.subheader("📈 자산 성장 및 V-Line 추이")
-        hist_fig = go.Figure()
-        hist_fig.add_trace(go.Scatter(x=df_history['Date'], y=df_history['V_old'], name="목표(V)", line=dict(color='gray', dash='dash')))
-        hist_fig.add_trace(go.Scatter(x=df_history['Date'], y=df_history['Qty'] * m['price'], name="실제 평가액", line=dict(color='#00FF00', width=3)))
-        hist_fig.update_layout(xaxis_title="날짜", yaxis_title="원", height=400)
-        st.plotly_chart(hist_fig, use_container_width=True)
 
-with tab2:
-    st.markdown("### 📘 ISA QLD VR 상세 운영 매뉴얼")
-    c1, c2 = st.columns(2)
-    with c1:
-        st.success("#### 🟢 상승 시 (수익 실현)")
-        st.write("""
-        1. 평가액이 **상단 밴드(V의 110%)** 돌파 시 매도 실행.
-        2. 목표 V값과 현재 평가액의 차액만큼 매도.
-        3. 수익금은 **가용 현금(Pool)**으로 보관.
-        """)
-    with c2:
-        st.error("#### 🔴 하락 시 (저가 매수)")
-        st.write("""
-        1. 평가액이 **하단 밴드(V의 90%)** 이탈 시 매수 검토.
-        2. **안전장치(탭3)**의 매수 승인 여부 확인 필수.
-        3. 승인 시 하단 밴드를 맞추기 위한 수량만큼 분할 매수.
-        """)
-    st.info("💡 **리밸런싱 주기:** 격주 월요일 오후 3시 / **목표 기울기:** 2주당 0.6% 증액")
-
-with tab3:
-    st.markdown("### 🛡️ ISA-VR 이중 안전장치 작동 기준")
-    st.info("폭락장에서 현금 고갈을 방지하기 위해 **낙폭(DD)**과 **공포지수(FnG)**를 동시 체크합니다.")
-    
-    col_a, col_b = st.columns(2)
-    with col_a:
-        st.subheader("1. 나스닥 낙폭 (DD)")
-        st.write("- **정상 (-10%):** 매수 강도 100%")
-        st.write("- **조정 (-20%):** 매수 강도 50%")
-        st.write("- **폭락 (-20%↓):** 매수 강도 30%")
-    with col_b:
-        st.subheader("2. 공포지수 (FnG)")
-        st.write("- **조정장:** FnG 20 이하 시에만 승인")
-        st.write("- **폭락장:** FnG 15 이하 시에만 승인")
-    
-    st.warning("⚠️ **주의:** 주가가 매수 밴드에 진입했어도 FnG 기준 미달 시 매수 신호는 출력되지 않습니다.")
+    tab1, tab2 = st.tabs(["📊 매매 가이드", "📋 상세 정보"])
+    telegram_msg = ""
+    with tab1:
+        if m_type == "normal": st.success(msg)
+        elif m_type == "warning": st.warning(msg)
+        else: st.error(msg)
+        telegram_msg += f"[ISA QLD 리포트]\n📅 {datetime.now().strftime('%Y-%m-%d')}\n가격: {m['price']:,}원\n상태: {msg}\n수익률: {roi_pct:.2f}% ({roi_val:,.0f}원)\n\n"
+        c1, c2, c3 = st.columns(3)
+        c1.metric("평가금", f"{m['price']*qty:,.0f}원")
+        c2.metric("목표 V", f"{v1:,.0f}원")
+        c3.metric("매수선", f"{v_l:,.0f}원")
+        st.divider()
+        l, r = st.columns(2)
+        with l:
+            st.markdown("#### 📉 매수 가이드")
+            if m['price'] * qty < v_l:
+                if ok:
+                    st.write(f"쿼터 {qta*100:.0f}%")
+                    for i in range(1, 10): 
+                        t_q = qty + i
+                        p = int(v_l / t_q)
+                        if p < m['price'] * 1.05:
+                            txt = f"✅ LOC 매수: {p:,}원 ({t_q}주)"
+                            st.code(txt)
+                            telegram_msg += f"{txt}\n"
+                else:
+                    st.error("🚫 매수 금지")
+                    telegram_msg += "🚫 FnG 경고: 매수 금지\n"
+            else:
+                st.info("😴 매수 관망")
+                telegram_msg += "😴 관망\n"
+        with r:
+            st.markdown("#### 📈 매도 가이드")
+            if m['price'] * qty > v_u:
+                for i in range(1, 5):
+                    t_q = qty - i
+                    if t_q > 0:
+                        p = int(v1 / t_q)
+                        if p > m['price']:
+                            txt = f"🔥 LOC 매도: {p:,}원 ({qty-t_q}주 판매)"
+                            st.code(txt)
+                            telegram_msg += f"{txt}\n"
+            else:
+                st.info("😴 매도 관망")
+                telegram_msg += "😴 관망\n"
+        st.divider()
+        if st.button("✈️ 텔레그램 전송"):
+            send_telegram_msg(telegram_msg)
+    with tab2: st.write("격주 월요일 리밸런싱 권장")
+else:
+    st.error("📉 데이터 로드 실패 (잠시 후 다시 시도하세요)")
+    st.info("💡 팁: 새로고침을 너무 자주 하면 야후 파이낸스에서 일시적으로 차단합니다. 5~10분 뒤에 다시 접속해보세요.")
