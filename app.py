@@ -4,7 +4,6 @@ import yfinance as yf
 import plotly.graph_objects as go
 from datetime import datetime
 import requests
-import time
 from streamlit_gsheets import GSheetsConnection
 
 # --- [0. 페이지 설정 및 제목] ---
@@ -81,14 +80,10 @@ with st.sidebar:
     conn = st.connection("gsheets", type=GSheetsConnection)
     
     try:
-        # 모든 데이터를 읽어오고 빈 행 제거
         df_history = conn.read(worksheet="ISA", ttl=0).dropna(how='all')
         if not df_history.empty:
             last_row = df_history.iloc[-1]
-            default_qty = int(last_row.iloc[0])
-            default_pool = int(last_row.iloc[1])
-            default_v = int(last_row.iloc[2])
-            default_principal = int(last_row.iloc[3])
+            default_qty, default_pool, default_v, default_principal = int(last_row.iloc[0]), int(last_row.iloc[1]), int(last_row.iloc[2]), int(last_row.iloc[3])
             st.success(f"📈 {len(df_history)}회차 기록 로드됨")
         else: raise Exception()
     except:
@@ -98,14 +93,14 @@ with st.sidebar:
     mode = st.radio("운용 모드", ["최초 시작", "사이클 업데이트"])
     principal = st.number_input("총 투입 원금 (원)", value=int(default_principal), step=10000)
     qty = st.number_input("보유 수량 (주)", value=int(default_qty), min_value=0)
-    pool = st.number_input("Pool (파킹ETF 평가금)", value=int(default_pool), step=10000)
+    pool = st.number_input("Pool (현금/파킹)", value=int(default_pool), step=10000)
     
     if mode == "최초 시작":
         v1 = m['price'] * qty
         v_to_save = v1
     else:
         v_old = st.number_input("직전 V1 (원)", value=int(default_v), step=10000)
-        target_roi = st.slider("이번 텀 목표 수익률 (%)", 0.0, 1.5, 0.6, step=0.1) / 100
+        target_roi = st.slider("목표 수익률 (%)", 0.0, 1.5, 0.6, step=0.1) / 100
         v_to_save = int(v_old * (1 + target_roi))
         v1 = v_to_save
         add_cash = st.number_input("추가 입금액 (원)", value=0, step=10000)
@@ -120,10 +115,9 @@ with st.sidebar:
         updated_df = pd.concat([df_history, new_row], ignore_index=True)
         conn.update(worksheet="ISA", data=updated_df)
         st.cache_data.clear() 
-        st.success("✅ 날짜 및 FnG 포함 기록 완료!")
+        st.success("✅ 저장 완료!")
 
-# --- [4. 메인 화면 출력] ---
-# v1이 0인 초기 상태에서도 탭이 보이도록 수정
+# --- [4. 메인 화면] ---
 tab1, tab2, tab3 = st.tabs(["📊 매매 가이드", "📋 사용방법", "🛡️ 안전장치 로직"])
 
 with tab1:
@@ -144,11 +138,12 @@ with tab1:
         elif m_type == "warning": st.warning(msg)
         else: st.error(msg)
         
+        # 포지션 그래프
         pos_fig = go.Figure()
         pos_fig.add_trace(go.Scatter(x=[0], y=[v_u], name="매도", mode="markers+text", text=[f"매도: {v_u:,}"], textposition="top center", marker=dict(color="blue", size=12)))
         pos_fig.add_trace(go.Scatter(x=[0], y=[v_l], name="매수", mode="markers+text", text=[f"매수: {v_l:,}"], textposition="bottom center", marker=dict(color="red", size=12)))
         pos_fig.add_trace(go.Scatter(x=[0], y=[curr_stock_val], name="현재", mode="markers+text", text=[f"평가액: {curr_stock_val:,}"], textposition="middle right", marker=dict(color="green", size=18, symbol="diamond")))
-        pos_fig.update_layout(title="현재 사이클 포지션", xaxis=dict(showticklabels=False, range=[-1, 1]), height=350, showlegend=False)
+        pos_fig.update_layout(title="현재 사이클 포지션", xaxis=dict(showticklabels=False, range=[-1, 1]), height=300, showlegend=False)
         st.plotly_chart(pos_fig, use_container_width=True)
 
         l, r = st.columns(2)
@@ -159,32 +154,38 @@ with tab1:
                     st.info(f"매수 승인: 강도 {qta*100:.0f}%")
                     st.code(f"✅ LOC 추천가: {int(v_l/(qty+1)):,}원")
                 else: st.error("🚫 안전장치 차단: 매수 금지")
-            else: st.info("😴 관망 구간")
+            else: st.info("😴 매수 관망")
         with r:
             st.markdown("#### 📈 SELL (매도)")
             if curr_stock_val > v_u:
                 st.code(f"🔥 LOC 추천가: {int(v1/(qty-1)):,}원")
-            else: st.info("😴 관망 구간")
+            else: st.info("😴 매도 관망")
 
+        # [통합 그래프] 자산 히스토리 + FnG
         if not df_history.empty:
             st.divider()
-            st.subheader("📈 자산 성장 히스토리")
-            hist_fig = go.Figure()
-            hist_fig.add_trace(go.Scatter(x=df_history['Date'], y=df_history['V_old'], name="목표(V)", line=dict(color='gray', dash='dash')))
-            hist_fig.add_trace(go.Scatter(x=df_history['Date'], y=df_history['Qty'] * m['price'], name="실제 평가액", line=dict(color='#00FF00', width=3)))
+            st.subheader("📈 통합 성장 히스토리 (자산 & 심리)")
+            combined_fig = go.Figure()
+            combined_fig.add_trace(go.Scatter(x=df_history['Date'], y=df_history['V_old'], name="목표(V)", line=dict(color='gray', dash='dash')))
+            combined_fig.add_trace(go.Scatter(x=df_history['Date'], y=df_history['Qty'] * m['price'], name="실제 평가액", line=dict(color='#00FF00', width=3)))
             if 'FnG' in df_history.columns:
-                hist_fig.add_trace(go.Scatter(x=df_history['Date'], y=df_history['FnG'], name="당시 FnG", yaxis="y2", mode="markers", marker=dict(color="orange", size=8)))
-            hist_fig.update_layout(yaxis2=dict(title="FnG", overlaying="y", side="right", range=[0, 100]), height=400)
-            st.plotly_chart(hist_fig, use_container_width=True)
+                combined_fig.add_trace(go.Scatter(x=df_history['Date'], y=df_history['FnG'], name="당시 FnG", yaxis="y2", mode="markers+lines", marker=dict(color="orange", size=6), line=dict(width=1, dash='dot')))
+            combined_fig.update_layout(
+                yaxis=dict(title="자산 평가액 (원)"),
+                yaxis2=dict(title="공포지수 (FnG)", overlaying="y", side="right", range=[0, 100]),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                height=450
+            )
+            st.plotly_chart(combined_fig, use_container_width=True)
     else:
-        st.info("💡 사이드바에서 보유 수량을 입력하고 저장하면 가이드가 표시됩니다.")
+        st.info("💡 사이드바에서 보유 수량을 입력하고 저장하면 매매 가이드가 표시됩니다.")
 
 with tab2:
-    st.markdown("### 📘 ISA VR 5.1 실전 사용 매뉴얼")
-    st.success("#### 🟢 상승장 (매도 타임)\n- 평가액이 파란색 **매도선(110%)**을 넘으면 수익 실현 타이밍입니다.\n- 가이드에 나온 가격으로 매도 주문을 넣고, 판 돈은 **Pool(현금)**에 보관하세요. 💰")
-    st.warning("#### 🟡 횡보장 (관망 타임)\n- 주가가 밴드 안에서 움직이면 아무것도 하지 않는 것이 핵심입니다.\n- 매회차 V값을 조금씩 늘려가며(0.6% 권장) 자산의 기초 체력을 키웁니다. ☕")
-    st.error("#### 🔴 하락장 (매수 타임)\n- 주가 평가액이 빨간색 **매수선(90%)** 아래로 떨어지면 줍줍 타이밍입니다.\n- 단, **안전장치(탭3)**가 허락할 때만 현금을 투입하여 생존을 우선합니다. 📉")
-    st.markdown("---")
+    st.markdown("### 📘 ISA VR 실전 사용 매뉴얼")
+    st.success("#### 🟢 상승장 (매도 타임)\n- 평가액이 파란색 **매도선**을 넘으면 수익 실현 타이밍입니다.\n- 가이드 가격으로 매도 주문을 넣고, 판 돈은 **Pool(현금)**에 보관하세요. 💰")
+    st.warning("#### 🟡 횡보장 (관망 타임)\n- 주가가 밴드 안에서 움직이면 아무것도 하지 않는 것이 핵심입니다.\n- 매회차 V값을 조금씩 늘려가며 자산의 기초 체력을 키웁니다. ☕")
+    st.error("#### 🔴 하락장 (매수 타임)\n- 평가액이 빨간색 **매수선** 아래로 떨어지면 줍줍 타이밍입니다.\n- 단, **안전장치(탭3)**가 허락할 때만 현금을 투입하여 생존을 우선합니다. 📉")
+    st.divider()
     st.write("**📝 매매 운영 루틴**\n1. 격주 월요일 오후 3시: 수량과 현금을 정확히 입력\n2. 저장: '사이클 업데이트' 모드로 기록 저장\n3. 주문: LOC 예약 주문 실행")
 
 with tab3:
