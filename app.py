@@ -100,11 +100,33 @@ with st.sidebar:
         v_to_save = v1
     else:
         v_old = st.number_input("직전 V1 (원)", value=int(default_v), step=10000)
-        target_roi = st.slider("이번 텀 목표 수익률 (%)", 0.0, 1.5, 0.6, step=0.1) / 100
+        
+        # [수정] G값 자동화 로직 적용 (슬라이더 삭제됨)
+        st.write("#### 🤖 G값(기울기) 자동 설정")
+        g_val = st.radio(
+            "투자 성향 (G값)", 
+            [10, 20], 
+            index=0, 
+            format_func=lambda x: f"G={x} ({'기본' if x==10 else '보수적'})",
+            horizontal=True
+        )
+
+        # VR 공식: 목표수익률 = (현재Pool / 직전V) / G
+        # pool 변수는 위쪽 코드에서 이미 입력받았으므로 바로 사용 가능
+        if v_old > 0:
+            target_roi = (pool / v_old) / g_val
+        else:
+            target_roi = 0.0
+            
+        st.info(f"자동 계산된 목표 수익률: {target_roi*100:.2f}%")
+
         v_to_save = int(v_old * (1 + target_roi))
         v1 = v_to_save
+        
         add_cash = st.number_input("추가 입금액 (원)", value=0, step=10000)
-        if add_cash > 0: v1 += add_cash; principal += add_cash
+        if add_cash > 0: 
+            v1 += add_cash
+            principal += add_cash
 
     if st.button("💾 ISA 시트에 저장"):
         new_row = pd.DataFrame([{
