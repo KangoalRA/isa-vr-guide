@@ -24,24 +24,33 @@ def send_telegram_msg(msg):
 # --- [1. 시장 데이터 수집] ---
 @st.cache_data(ttl=600)
 def get_market_intelligence():
+    # 가격 0으로 인한 에러 방지용 기본값
     data = {"price": 0, "dd": 0.0, "fng": 25.0, "bull": True}
     try:
+        # Ticker: 409820.KS (SOL 미국테크TOP10 레버리지 예시)
         t_hist = yf.Ticker("409820.KS").history(period="5d")
-        if not t_hist.empty: data["price"] = int(t_hist['Close'].iloc[-1])
+        if not t_hist.empty: 
+            data["price"] = int(t_hist['Close'].iloc[-1])
+        
         n_hist = yf.Ticker("^NDX").history(period="2y")
         if not n_hist.empty:
             ndx_high = n_hist['Close'].max()
             curr_ndx = n_hist['Close'].iloc[-1]
             data["dd"] = round((curr_ndx / ndx_high - 1) * 100, 2)
             data["bull"] = curr_ndx > n_hist['Close'].rolling(window=200).mean().iloc[-1]
+            
         r = requests.get("https://production.dataviz.cnn.io/index/fearandgreed/static/history", headers={'User-Agent': 'Mozilla/5.0'}, timeout=3)
         if r.status_code == 200: data["fng"] = float(r.json()['fear_and_greed']['score'])
+        
         return data
-    except: return data
+    except Exception as e:
+        # 에러 발생 시 로그만 찍고 앱이 멈추지 않게 함
+        print(f"Data Fetch Error: {e}")
+        return data
 
 m = get_market_intelligence()
 
-# --- [2. 로직 함수] ---
+# --- [2. 로직 함수 (수정 없음)] ---
 def get_recommended_band_ui(dd, is_bull):
     if not is_bull or dd <= -20: return 10, "🟥 폭락장/역배열: 10% 추천", "error"
     elif -20 < dd <= -10: return 15, "🟧 조정장: 15% 추천", "warning"
@@ -59,15 +68,16 @@ st.title("⚖️ ISA VR 매매 가이드")
 
 with st.sidebar:
     st.header("⚙️ 시장 지표")
-    st.metric("현재가", f"{m['price']:,}원")
+    if m['price'] > 0:
+        st.metric("현재가", f"{m['price']:,}원")
+    else:
+        st.error("⚠️ 현재가 로딩 실패 (0원)")
+        
     st.metric("나스닥 낙폭", f"{m['dd']}%")
-    
-    # [복구] FnG 링크 및 입력
-    st.markdown("[👉 FnG Index (CNN) 확인하기](https://edition.cnn.com/markets/fear-and-greed)")
+    st.markdown("[👉 FnG Index (CNN)](https://edition.cnn.com/markets/fear-and-greed)")
     fng_input = st.number_input("FnG Index 입력", value=float(m['fng']))
     
     st.divider()
-    # 밴드폭 설정
     _, rec_msg, style = get_recommended_band_ui(m['dd'], m['bull'])
     if style == "error": st.error(rec_msg)
     elif style == "warning": st.warning(rec_msg)
@@ -95,8 +105,7 @@ with st.sidebar:
     qty = st.number_input("보유 수량", value=int(d_qty), min_value=0)
     pool = st.number_input("Pool (예수금)", value=int(d_pool))
     
-    # G값 10 고정
-    g_val = 10
+    g_val = 10 # G값 고정
     
     if mode == "최초 시작":
         v1 = m['price'] * qty
@@ -129,14 +138,14 @@ tab1, tab2, tab3 = st.tabs(["📊 매매 대시보드", "📋 사용방법", "�
 
 with tab1:
     if v1 > 0:
-        # 밴드 계산
+        # 변수 계산
         v_l = int(v1 * (1 - band_pct))
         v_u = int(v1 * (1 + band_pct))
         curr_stock_val = m['price'] * qty
         current_asset = curr_stock_val + pool
         ok, qta, msg, m_type = check_safety(m['dd'], fng_input)
         
-        # 수익률
+        # 수익률 (0으로 나누기 방지)
         total_roi = (current_asset / principal - 1) * 100 if principal > 0 else 0
         stock_roi = (m['price'] / avg_price - 1) * 100 if avg_price > 0 else 0
 
@@ -148,52 +157,27 @@ with tab1:
         c4.metric("V 대비 괴리율", f"{(curr_stock_val/v1-1)*100:.1f}%")
         st.divider()
 
-        # [복구] 포지션 그래프 (밴드폭 + 현재위치 + 목표가)
-        st.subheader("🎯 현재 포지션 (밴드 내 위치)")
-        pos_fig = go.Figure()
-        
-        # 1. 밴드 영역 (회색 박스)
-        pos_fig.add_shape(type="rect", x0=v_l, x1=v_u, y0=-1, y1=1, fillcolor="lightgray", opacity=0.3, line_width=0)
-        
-        # 2. 주요 라인 (매수선, 매도선, V1)
-        pos_fig.add_vline(x=v_l, line_width=2, line_dash="dot", line_color="red", annotation_text="매수선(Lower)", annotation_position="bottom right")
-        pos_fig.add_vline(x=v_u, line_width=2, line_dash="dot", line_color="blue", annotation_text="매도선(Upper)", annotation_position="top left")
-        pos_fig.add_vline(x=v1, line_width=2, line_dash="dash", line_color="gray", annotation_text="목표(V)", annotation_position="top")
-        
-        # 3. 내 위치 (다이아몬드)
-        pos_fig.add_trace(go.Scatter(
-            x=[curr_stock_val], y=[0], 
-            mode='markers+text', 
-            marker=dict(size=20, symbol='diamond', color='green' if v_l < curr_stock_val < v_u else 'red'),
-            text=[f"현재: {curr_stock_val:,.0f}"], textposition="bottom center",
-            name="현재 평가액"
-        ))
-
-        pos_fig.update_layout(
-            height=200, 
-            xaxis=dict(title="자산 가치 (원)", showgrid=False),
-            yaxis=dict(showticklabels=False, range=[-0.5, 0.5], showgrid=False),
-            margin=dict(l=20, r=20, t=20, b=20),
-            showlegend=False
-        )
-        st.plotly_chart(pos_fig, use_container_width=True)
-
-        # 안전장치 상태 및 매매 가이드
+        # 안전장치 상태 표시
         if m_type == "normal": st.success(f"🛡️ 안전장치: {msg}")
         elif m_type == "warning": st.warning(f"🛡️ 안전장치: {msg}")
         else: st.error(f"🛡️ 안전장치: {msg}")
 
+        # [배치 수정됨: 매매 가이드를 그래프 위로 올림]
         l, r = st.columns(2)
         telegram_msg = f"[ISA VR 리포트]\n📅 {datetime.now().strftime('%Y-%m-%d')}\n상태: {msg}\n총수익: {total_roi:.2f}%\n"
         
-        # 수량 계산 로직 (밴드 이탈 시 밴드선까지 복귀하도록 계산)
+        # 매수/매도 로직 (ZeroDivisionError 완벽 수정)
         with l:
             st.markdown("#### 📉 BUY (매수)")
             if curr_stock_val < v_l:
                 if ok:
-                    # 매수 목표: 매수선(v_l)까지 맞추기
-                    req_qty = int((v_l - curr_stock_val) / m['price'])
-                    cost = req_qty * m['price']
+                    # [핵심 수정] 가격이 0이면 계산 스킵
+                    if m['price'] > 0:
+                        req_qty = int((v_l - curr_stock_val) / m['price'])
+                        cost = req_qty * m['price']
+                    else:
+                        req_qty = 0
+                        cost = 0
                     
                     st.info(f"✅ 매수 신호 발생 (강도 {qta*100:.0f}%)")
                     st.write(f"**추천 수량:** {req_qty}주")
@@ -212,9 +196,13 @@ with tab1:
         with r:
             st.markdown("#### 📈 SELL (매도)")
             if curr_stock_val > v_u:
-                # 매도 목표: 매도선(v_u)까지 맞추기
-                req_qty = int((curr_stock_val - v_u) / m['price'])
-                cash_secure = req_qty * m['price']
+                # [핵심 수정] 가격이 0이면 계산 스킵
+                if m['price'] > 0:
+                    req_qty = int((curr_stock_val - v_u) / m['price'])
+                    cash_secure = req_qty * m['price']
+                else:
+                    req_qty = 0
+                    cash_secure = 0
                 
                 st.info("🔥 수익 실현 신호 발생")
                 st.write(f"**추천 수량:** {req_qty}주")
@@ -226,8 +214,39 @@ with tab1:
                 telegram_msg += f"매도: {req_qty}주\n{txt}\n"
             else:
                 st.markdown(f"매도선까지 **{curr_stock_val - v_u:,.0f}원** 상승 시 진입")
-
+        
         st.divider()
+
+        # [배치 수정됨: 그래프를 매매 가이드 아래로 내림]
+        st.subheader("🎯 현재 포지션 (밴드 내 위치)")
+        pos_fig = go.Figure()
+        
+        # 1. 밴드 영역
+        pos_fig.add_shape(type="rect", x0=v_l, x1=v_u, y0=-1, y1=1, fillcolor="lightgray", opacity=0.3, line_width=0)
+        
+        # 2. 주요 라인
+        pos_fig.add_vline(x=v_l, line_width=2, line_dash="dot", line_color="red", annotation_text="매수선", annotation_position="bottom right")
+        pos_fig.add_vline(x=v_u, line_width=2, line_dash="dot", line_color="blue", annotation_text="매도선", annotation_position="top left")
+        pos_fig.add_vline(x=v1, line_width=2, line_dash="dash", line_color="gray", annotation_text="목표(V)", annotation_position="top")
+        
+        # 3. 내 위치
+        pos_fig.add_trace(go.Scatter(
+            x=[curr_stock_val], y=[0], 
+            mode='markers+text', 
+            marker=dict(size=20, symbol='diamond', color='green' if v_l < curr_stock_val < v_u else 'red'),
+            text=[f"현재: {curr_stock_val:,.0f}"], textposition="bottom center",
+            name="현재 평가액"
+        ))
+
+        pos_fig.update_layout(
+            height=200, 
+            xaxis=dict(title="자산 가치 (원)", showgrid=False),
+            yaxis=dict(showticklabels=False, range=[-0.5, 0.5], showgrid=False),
+            margin=dict(l=20, r=20, t=20, b=20),
+            showlegend=False
+        )
+        st.plotly_chart(pos_fig, use_container_width=True)
+
         if st.button("✈️ 텔레그램 전송"):
             send_telegram_msg(telegram_msg)
 
@@ -251,15 +270,7 @@ with tab2:
     st.write("4. **주문:** 대시보드에 뜨는 **'추천 수량'** 만큼 LOC 매수/매도 주문을 겁니다.")
 
 with tab3:
-    st.markdown("### 🛡️ 안전장치 로직 (Safe Guard)")
+    st.markdown("### 🛡️ 안전장치 로직")
     st.write("하락장에서 현금이 마르는 것을 방지하기 위해 아래 규칙을 엄격히 따릅니다.")
     st.error(f"**현재 상태:** 낙폭(DD) {m['dd']}% / 공포지수(FnG) {fng_input}")
-    
-    st.markdown("""
-    | 구분 | 조건 (나스닥 낙폭) | FnG 조건 | 매수 강도 | 비고 |
-    | :--- | :--- | :--- | :--- | :--- |
-    | **정상장** | -10% 이내 | 상관없음 | **100%** | 정상 매매 |
-    | **조정장** | -10% ~ -20% | **20 이하** | **50%** | 공포 아니면 매수 금지 |
-    | **폭락장** | -20% 초과 | **15 이하** | **30%** | 극공포 아니면 절대 금지 |
-    """)
-    st.info("💡 **핵심:** 지수가 아무리 떨어져도, 사람들이 충분히 공포를 느끼지 않으면(FnG가 높으면) 바닥이 아닙니다. 그때 현금을 아껴야 찐바닥을 잡습니다.")
+    st.info("💡 **핵심:** 지수가 아무리 떨어져도, 사람들이 충분히 공포를 느끼지 않으면(FnG가 높으면) 바닥이 아닙니다.")
